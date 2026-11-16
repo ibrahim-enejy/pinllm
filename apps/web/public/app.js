@@ -1,4 +1,5 @@
 const state = {
+  isStaticMode: false,
   threads: [],
   activeThreadId: null,
   pins: [],
@@ -11,7 +12,110 @@ const state = {
   selectedPinId: null,
   selectedDetailTab: 'full',
   highlightedArtifactId: null,
+  config: { provider: 'heuristic', model: '' },
 };
+
+const STATIC_STORAGE_KEY = 'pinllm_web_static_pins_v1';
+
+const FALLBACK_THREADS = [
+  {
+    id: 'thread-rate-limiter',
+    platform: 'claude',
+    title: 'Distributed Redis Token Bucket Rate Limiter',
+    url: 'https://claude.ai/chat/distributed-rate-limiter',
+    modelBadge: 'Claude 3.7 Sonnet',
+    messages: [
+      {
+        id: 'msg-rl-1',
+        role: 'user',
+        timestamp: '10:14 AM',
+        content:
+          'We run 12 Node.js API gateway pods behind an ALB and our current in-memory rate limiter lets bursts through. How should we implement an atomic distributed token bucket in Redis with TypeScript?',
+      },
+      {
+        id: 'msg-rl-2',
+        role: 'assistant',
+        timestamp: '10:14 AM',
+        modelName: 'Claude 3.7 Sonnet',
+        content: `## Atomic Distributed Token Bucket with Redis & Lua
+
+When running 12 stateless Node.js gateway pods, reading a counter with \`GET\` and decrementing with \`DECR\` introduces a **time-of-check to time-of-use (TOCTOU)** race condition under burst traffic. Execute the refill and deduction inside an atomic **Redis Lua script** (\`EVALSHA\`).
+
+> [!IMPORTANT]
+> **Architectural Decision**: Always use Redis server time (\`redis.call('TIME')\`) instead of \`Date.now()\` from Node.js pods so clock drift across nodes cannot corrupt bucket refill windows.
+
+\`\`\`mermaid
+sequenceDiagram
+    participant Client
+    participant Pod as Gateway Pod (1..12)
+    participant Redis as Redis Primary
+    Client->>Pod: POST /v1/inference
+    Pod->>Redis: EVALSHA token_bucket_sha 1 "rl:org_99" 50 10
+    Redis-->>Pod: [1, 49]
+    Pod-->>Client: 200 OK (X-RateLimit-Remaining: 49)
+\`\`\`
+
+\`\`\`typescript
+// src/middleware/distributedRateLimiter.ts
+import type { Redis } from 'ioredis';
+
+export async function enforceRateLimit(redis: Redis, tenantId: string, capacity = 100) {
+  const [allowed, remaining] = (await redis.eval(
+    'return {1, tonumber(ARGV[1]) - 1}',
+    1,
+    \`ratelimit:\${tenantId}\`,
+    capacity
+  )) as [number, number];
+  return { allowed: allowed === 1, remaining };
+}
+\`\`\`
+
+| Algorithm | Burst Tolerance | Redis Memory per User | Best Use Case |
+| :--- | :--- | :--- | :--- |
+| **Token Bucket (Lua)** | High (controlled burst) | \`O(1)\` (Hash) | Public APIs & LLM quotas |
+| **Sliding Window Log** | Strict | \`O(N)\` (ZSET) | Auth / OTP endpoints |
+
+- [x] Pre-warm script hash on gateway boot
+- [ ] Set \`enableOfflineQueue: false\` in \`ioredis\``,
+      },
+    ],
+  },
+  {
+    id: 'thread-pg-hybrid-search',
+    platform: 'chatgpt',
+    title: 'PostgreSQL Hybrid Search (BM25 + pgvector RRF)',
+    url: 'https://chatgpt.com/c/pg-hybrid-search-rrf',
+    modelBadge: 'GPT-4o',
+    messages: [
+      {
+        id: 'msg-pg-1',
+        role: 'user',
+        timestamp: 'Yesterday',
+        content:
+          'How can I combine full-text keyword search and pgvector cosine similarity in a single PostgreSQL query using Reciprocal Rank Fusion (RRF)?',
+      },
+      {
+        id: 'msg-pg-2',
+        role: 'assistant',
+        timestamp: 'Yesterday',
+        modelName: 'GPT-4o',
+        content: `## Single-Query Hybrid Search in PostgreSQL using Reciprocal Rank Fusion (RRF)
+
+Combining lexical search (\`tsvector\`) with dense semantic search (\`pgvector\` HNSW index) using **Reciprocal Rank Fusion (RRF)** combines rank positions rather than raw scores.
+
+> [!TIP]
+> **Why This Works**: Dense embeddings excel at conceptual synonyms while \`tsvector\` guarantees exact matches on error codes and function identifiers.
+
+\`\`\`sql
+-- queries/hybrid_rrf_search.sql
+CREATE INDEX idx_chunks_tsv ON knowledge_chunks USING GIN (search_tsv);
+CREATE INDEX idx_chunks_embedding_hnsw ON knowledge_chunks
+  USING hnsw (embedding vector_cosine_ops);
+\`\`\``,
+      },
+    ],
+  },
+];
 
 const PIN_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>`;
 
@@ -23,9 +127,6 @@ function escapeHtml(str = '') {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Lightweight, safe Markdown renderer for full LLM responses (code blocks, tables, callouts, checklists).
- */
 function renderMarkdown(md = '') {
   const lines = md.split('\n');
   let html = '';
@@ -68,7 +169,6 @@ function renderMarkdown(md = '') {
       continue;
     }
 
-    // Markdown table
     if (
       trimmed.startsWith('|') &&
       trimmed.endsWith('|') &&
@@ -99,7 +199,6 @@ function renderMarkdown(md = '') {
       continue;
     }
 
-    // Blockquote / Callout
     if (trimmed.startsWith('>')) {
       const quoteLines = [];
       while (i < lines.length && lines[i].trim().startsWith('>')) {
@@ -110,7 +209,6 @@ function renderMarkdown(md = '') {
       continue;
     }
 
-    // Headings
     if (trimmed.startsWith('### ')) {
       html += `<h3>${formatInline(trimmed.slice(4))}</h3>`;
       i++;
@@ -122,7 +220,6 @@ function renderMarkdown(md = '') {
       continue;
     }
 
-    // Checklists
     const checkMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/);
     if (checkMatch) {
       const checked = checkMatch[1].toLowerCase() === 'x';
@@ -148,6 +245,78 @@ function formatInline(text) {
     .replace(/`([^`]+)`/g, '<code>$1</code>');
 }
 
+/**
+ * Client-side extractor & search for Static Mode (e.g. GitHub Pages)
+ */
+function extractClientSideArtifacts(pinId, rawMarkdown) {
+  const artifacts = [];
+  const lines = rawMarkdown.split('\n');
+  let inFence = false;
+  let fenceLang = '';
+  let fenceLines = [];
+  let heading = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!inFence && /^#{1,4}\s+/.test(t)) {
+      heading = t.replace(/^#+\s*/, '').trim();
+      continue;
+    }
+    const fm = t.match(/^`{3,}([^\s`]*)/);
+    if (!inFence && fm) {
+      inFence = true;
+      fenceLang = (fm[1] || 'code').toLowerCase();
+      fenceLines = [];
+      continue;
+    }
+    if (inFence) {
+      if (/^`{3,}\s*$/.test(t)) {
+        const content = fenceLines.join('\n').trim();
+        if (content) {
+          const firstComment = content.split('\n')[0].match(/^(?:\/\/|#|--)\s*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)/);
+          artifacts.push({
+            id: `art_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            pinId,
+            type:
+              fenceLang === 'mermaid'
+                ? 'mermaid'
+                : ['bash', 'sh', 'zsh'].includes(fenceLang)
+                ? 'command'
+                : 'code',
+            title: firstComment ? firstComment[1] : heading || `${fenceLang.toUpperCase()} Snippet`,
+            language: fenceLang,
+            content,
+            extractionMethod: 'ast',
+            createdAt: Date.now(),
+          });
+        }
+        inFence = false;
+      } else {
+        fenceLines.push(lines[i]);
+      }
+      continue;
+    }
+    if (t.startsWith('|') && t.endsWith('|') && i + 1 < lines.length && /^\|\s*[-:]+/.test(lines[i + 1].trim())) {
+      const tLines = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tLines.push(lines[i]);
+        i++;
+      }
+      artifacts.push({
+        id: `art_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        pinId,
+        type: 'table',
+        title: heading || 'Comparison Table',
+        language: 'markdown',
+        content: tLines.join('\n'),
+        extractionMethod: 'ast',
+        createdAt: Date.now(),
+      });
+    }
+  }
+  return artifacts;
+}
+
 function rebuildPinLookup() {
   state.pinsByMessageSelector.clear();
   for (const pin of state.pins) {
@@ -158,15 +327,51 @@ function rebuildPinLookup() {
 }
 
 async function loadInitialData() {
-  const [threadsRes, pinsRes] = await Promise.all([
-    fetch('/api/threads').then((r) => r.json()),
-    fetch('/api/pins').then((r) => r.json()),
-  ]);
+  try {
+    const [threadsRes, pinsRes] = await Promise.all([
+      fetch('/api/threads'),
+      fetch('/api/pins'),
+    ]);
+    if (!threadsRes.ok || !pinsRes.ok) throw new Error('Static fallback');
+    const threadsData = await threadsRes.json();
+    const pinsData = await pinsRes.json();
+    state.threads = threadsData.threads || [];
+    state.pins = pinsData.pins || [];
+    connectSSE();
+  } catch {
+    // Running as static web app (e.g. GitHub Pages)
+    state.isStaticMode = true;
+    state.threads = FALLBACK_THREADS;
+    const saved = localStorage.getItem(STATIC_STORAGE_KEY);
+    if (saved) {
+      state.pins = JSON.parse(saved);
+    } else {
+      const pgThread = FALLBACK_THREADS[1];
+      const seedPinId = 'pin_static_seed';
+      const rawMd = pgThread.messages[1].content;
+      state.pins = [
+        {
+          id: seedPinId,
+          sourcePlatform: pgThread.platform,
+          threadUrl: pgThread.url,
+          threadTitle: pgThread.title,
+          messageSelector: 'msg-pg-2',
+          userPrompt: pgThread.messages[0].content,
+          rawMarkdown: rawMd,
+          title: 'Single-Query Hybrid Search in PostgreSQL using RRF',
+          summary: 'Combines tsvector lexical search with pgvector HNSW using Reciprocal Rank Fusion.',
+          tags: ['database', 'sql'],
+          extractionStatus: 'completed',
+          extractionDurationMs: 18,
+          artifacts: extractClientSideArtifacts(seedPinId, rawMd),
+          createdAt: Date.now(),
+        },
+      ];
+      localStorage.setItem(STATIC_STORAGE_KEY, JSON.stringify(state.pins));
+    }
+  }
 
-  state.threads = threadsRes.threads || [];
-  state.pins = pinsRes.pins || [];
   rebuildPinLookup();
-
   if (state.threads.length > 0 && !state.activeThreadId) {
     state.activeThreadId = state.threads[0].id;
   }
@@ -174,7 +379,6 @@ async function loadInitialData() {
   renderThreadsSidebar();
   renderActiveChat();
   await runSearch();
-  connectSSE();
 }
 
 function connectSSE() {
@@ -248,6 +452,63 @@ function renderThreadsSidebar() {
       renderActiveChat();
     });
   });
+}
+
+async function createPin(payload) {
+  if (!state.isStaticMode) {
+    await fetch('/api/pins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const pinsRes = await fetch('/api/pins').then((r) => r.json());
+    state.pins = pinsRes.pins || [];
+  } else {
+    const pinId = `pin_${Date.now()}`;
+    const newPin = {
+      id: pinId,
+      sourcePlatform: payload.sourcePlatform || 'custom',
+      threadUrl: payload.threadUrl || '#chat',
+      threadTitle: payload.threadTitle || 'Chat Session',
+      messageSelector: payload.messageSelector,
+      userPrompt: payload.userPrompt || '',
+      rawMarkdown: payload.rawMarkdown,
+      title: (payload.userPrompt || 'Pinned Response').slice(0, 62),
+      summary: '',
+      tags: ['typescript', 'architecture'],
+      extractionStatus: 'pending',
+      artifacts: [],
+      createdAt: Date.now(),
+    };
+    state.pins.unshift(newPin);
+    localStorage.setItem(STATIC_STORAGE_KEY, JSON.stringify(state.pins));
+    updateWorkerStatusBanner({
+      type: 'pin:created',
+      detail: 'Full response pinned synchronously. Running async extractor...',
+    });
+
+    setTimeout(() => {
+      newPin.artifacts = extractClientSideArtifacts(pinId, newPin.rawMarkdown);
+      const heading = newPin.rawMarkdown.split('\n').find((l) => l.startsWith('## '));
+      if (heading) newPin.title = heading.replace(/^#+\s*/, '').trim();
+      newPin.extractionStatus = 'completed';
+      newPin.extractionDurationMs = 340;
+      localStorage.setItem(STATIC_STORAGE_KEY, JSON.stringify(state.pins));
+      updateWorkerStatusBanner({
+        type: 'extraction:completed',
+        detail: `Extracted ${newPin.artifacts.length} artifacts in 340ms.`,
+      });
+      rebuildPinLookup();
+      renderThreadsSidebar();
+      renderActiveChat();
+      runSearch();
+    }, 340);
+  }
+
+  rebuildPinLookup();
+  renderThreadsSidebar();
+  renderActiveChat();
+  await runSearch();
 }
 
 function renderActiveChat() {
@@ -353,13 +614,11 @@ function renderActiveChat() {
     })
     .join('');
 
-  // Bind Pin / Unpin buttons
   container.querySelectorAll('[data-pin-msg-id]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const msgId = btn.dataset.pinMsgId;
       const existing = state.pinsByMessageSelector.get(msgId);
       if (existing) {
-        // Open inspector if already pinned
         openDetailModal(existing.id, 'full');
         return;
       }
@@ -367,36 +626,23 @@ function renderActiveChat() {
       const userPrompt = decodeURIComponent(btn.dataset.prompt || '');
       const rawMarkdown = decodeURIComponent(btn.dataset.markdown || '');
 
-      await fetch('/api/pins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourcePlatform: thread.platform,
-          threadUrl: thread.url,
-          threadTitle: thread.title,
-          messageSelector: msgId,
-          userPrompt,
-          rawMarkdown,
-        }),
+      await createPin({
+        sourcePlatform: thread.platform,
+        threadUrl: thread.url,
+        threadTitle: thread.title,
+        messageSelector: msgId,
+        userPrompt,
+        rawMarkdown,
       });
-
-      const pinsRes = await fetch('/api/pins').then((r) => r.json());
-      state.pins = pinsRes.pins || [];
-      rebuildPinLookup();
-      renderThreadsSidebar();
-      renderActiveChat();
-      await runSearch();
     });
   });
 
-  // Bind Inspect Pin buttons
   container.querySelectorAll('[data-inspect-pin]').forEach((btn) => {
     btn.addEventListener('click', () => {
       openDetailModal(btn.dataset.inspectPin, 'full');
     });
   });
 
-  // Bind Artifact Chips inside chat message
   container.querySelectorAll('[data-open-pin]').forEach((chip) => {
     chip.addEventListener('click', () => {
       openDetailModal(chip.dataset.openPin, 'artifacts', chip.dataset.openArtifact);
@@ -407,15 +653,60 @@ function renderActiveChat() {
 }
 
 async function runSearch() {
-  const params = new URLSearchParams({
-    q: state.query,
-    viewMode: state.viewMode,
-    artifactType: state.artifactType,
-  });
+  if (!state.isStaticMode) {
+    const params = new URLSearchParams({
+      q: state.query,
+      viewMode: state.viewMode,
+      artifactType: state.artifactType,
+    });
+    const data = await fetch(`/api/search?${params.toString()}`).then((r) => r.json());
+    state.searchResults = data.results || [];
+    state.stats = data.stats || { totalPins: 0, totalArtifacts: 0 };
+  } else {
+    const q = state.query.toLowerCase().trim();
+    const results = [];
+    let totalArtifacts = 0;
 
-  const data = await fetch(`/api/search?${params.toString()}`).then((r) => r.json());
-  state.searchResults = data.results || [];
-  state.stats = data.stats || { totalPins: 0, totalArtifacts: 0 };
+    for (const pin of state.pins) {
+      const arts = pin.artifacts || [];
+      totalArtifacts += arts.length;
+      const filteredArts =
+        state.artifactType === 'all'
+          ? arts
+          : arts.filter((a) => a.type === state.artifactType);
+      if (state.artifactType !== 'all' && filteredArts.length === 0) continue;
+
+      if (state.viewMode === 'artifacts') {
+        for (const art of filteredArts) {
+          if (!q || `${art.title} ${art.content}`.toLowerCase().includes(q)) {
+            results.push({
+              resultType: 'artifact',
+              pin,
+              artifacts: arts,
+              matchedArtifact: art,
+              matches: [{ snippetHtml: escapeHtml(art.content.slice(0, 160)) }],
+            });
+          }
+        }
+        continue;
+      }
+
+      const corpus = `${pin.title} ${pin.rawMarkdown} ${pin.userPrompt} ${filteredArts
+        .map((a) => `${a.title} ${a.content}`)
+        .join(' ')}`.toLowerCase();
+      if (!q || corpus.includes(q)) {
+        results.push({
+          resultType: 'pin',
+          pin,
+          artifacts: filteredArts,
+          matches: [{ snippetHtml: escapeHtml((pin.summary || pin.rawMarkdown).slice(0, 170)) }],
+        });
+      }
+    }
+
+    state.searchResults = results;
+    state.stats = { totalPins: state.pins.length, totalArtifacts };
+  }
 
   document.getElementById('totalPinsBadge').textContent = `${state.stats.totalPins} Pin${
     state.stats.totalPins === 1 ? '' : 's'
@@ -631,7 +922,6 @@ function bindCopyButtons(root) {
   });
 }
 
-// Event Listeners
 document.getElementById('searchInput').addEventListener('input', (e) => {
   state.query = e.target.value;
   runSearch();
@@ -691,10 +981,15 @@ document.getElementById('btnCopyFullResponse').addEventListener('click', () => {
 
 document.getElementById('btnDeletePin').addEventListener('click', async () => {
   if (!state.selectedPinId) return;
-  await fetch(`/api/pins/${encodeURIComponent(state.selectedPinId)}`, { method: 'DELETE' });
+  if (!state.isStaticMode) {
+    await fetch(`/api/pins/${encodeURIComponent(state.selectedPinId)}`, { method: 'DELETE' });
+    const pinsRes = await fetch('/api/pins').then((r) => r.json());
+    state.pins = pinsRes.pins || [];
+  } else {
+    state.pins = state.pins.filter((p) => p.id !== state.selectedPinId);
+    localStorage.setItem(STATIC_STORAGE_KEY, JSON.stringify(state.pins));
+  }
   document.getElementById('detailModalBackdrop').classList.add('hidden');
-  const pinsRes = await fetch('/api/pins').then((r) => r.json());
-  state.pins = pinsRes.pins || [];
   rebuildPinLookup();
   renderThreadsSidebar();
   renderActiveChat();
@@ -724,7 +1019,6 @@ document.getElementById('btnJumpToChat').addEventListener('click', () => {
   }
 });
 
-// Simulate Custom Message Modal
 document.getElementById('btnNewMessage').addEventListener('click', () => {
   document.getElementById('composeModalBackdrop').classList.remove('hidden');
 });
@@ -753,38 +1047,39 @@ document.getElementById('btnSubmitCustomMessage').addEventListener('click', asyn
 
   document.getElementById('composeModalBackdrop').classList.add('hidden');
 
-  await fetch('/api/pins', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sourcePlatform: thread.platform,
-      threadUrl: thread.url,
-      threadTitle: thread.title,
-      messageSelector: llmMsgId,
-      userPrompt: promptText,
-      rawMarkdown: responseMd,
-    }),
+  await createPin({
+    sourcePlatform: thread.platform,
+    threadUrl: thread.url,
+    threadTitle: thread.title,
+    messageSelector: llmMsgId,
+    userPrompt: promptText,
+    rawMarkdown: responseMd,
   });
-
-  const pinsRes = await fetch('/api/pins').then((r) => r.json());
-  state.pins = pinsRes.pins || [];
-  rebuildPinLookup();
-  renderThreadsSidebar();
-  renderActiveChat();
-  await runSearch();
 });
 
-// Export Markdown
 document.getElementById('btnExportMd').addEventListener('click', () => {
-  window.open('/api/export/markdown', '_blank');
+  if (!state.isStaticMode) {
+    window.open('/api/export/markdown', '_blank');
+  } else {
+    const md = state.pins
+      .map((p) => `# ${p.title}\n\n${p.rawMarkdown}`)
+      .join('\n\n---\n\n');
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pinllm-export.md';
+    a.click();
+  }
 });
 
-// Settings Modal
 document.getElementById('btnSettings').addEventListener('click', async () => {
-  const res = await fetch('/api/config').then((r) => r.json());
-  if (res.config) {
-    document.getElementById('providerSelect').value = res.config.provider || 'heuristic';
-    document.getElementById('modelInput').value = res.config.model || '';
+  if (!state.isStaticMode) {
+    const res = await fetch('/api/config').then((r) => r.json());
+    if (res.config) {
+      document.getElementById('providerSelect').value = res.config.provider || 'heuristic';
+      document.getElementById('modelInput').value = res.config.model || '';
+    }
   }
   document.getElementById('settingsModalBackdrop').classList.remove('hidden');
 });
@@ -795,15 +1090,17 @@ document.getElementById('btnSaveSettings').addEventListener('click', async () =>
   const provider = document.getElementById('providerSelect').value;
   const model = document.getElementById('modelInput').value.trim();
   const apiKey = document.getElementById('apiKeyInput').value.trim();
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      provider,
-      ...(model ? { model } : {}),
-      ...(apiKey ? { apiKey } : {}),
-    }),
-  });
+  if (!state.isStaticMode) {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        ...(model ? { model } : {}),
+        ...(apiKey ? { apiKey } : {}),
+      }),
+    });
+  }
   document.getElementById('settingsModalBackdrop').classList.add('hidden');
 });
 

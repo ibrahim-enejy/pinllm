@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PinLLM Vault</title>
+  <link rel="stylesheet" href="content.css" />
+  <style>
+    body {
+      margin: 0;
+      width: 390px;
+      height: 520px;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div class="pinllm-drawer-header">
+    <div>
+      <strong>📌 PinLLM Vault</strong>
+      <span class="pinllm-subbadge" id="popupStats">0 Pins · 0 Artifacts</span>
+    </div>
+    <button type="button" class="pinllm-mini-btn" id="popupExportBtn">Export .MD</button>
+  </div>
+
+  <div class="pinllm-drawer-controls">
+    <input type="search" id="popupSearchInput" placeholder="Search full responses & extracted artifacts..." autofocus />
+    <div class="pinllm-segments">
+      <button type="button" class="pinllm-seg active" data-mode="all">All</button>
+      <button type="button" class="pinllm-seg" data-mode="responses">Full Responses</button>
+      <button type="button" class="pinllm-seg" data-mode="artifacts">Artifacts Only</button>
+    </div>
+  </div>
+
+  <div class="pinllm-drawer-list" id="popupList"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

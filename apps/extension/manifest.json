@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "PinLLM — Pin LLM Responses & Search Extracted Artifacts",
+  "name": "PinLLM — Pin LLM Responses & Async Artifact Search",
+  "short_name": "PinLLM",
   "version": "0.1.0",
-  "description": "Pin full LLM responses inside ChatGPT, Claude, and Gemini with asynchronous artifact extraction and instant hybrid search.",
+  "description": "Free, open-source browser extension to pin full LLM responses inside ChatGPT, Claude, Gemini & DeepSeek with asynchronous artifact extraction and instant hybrid search.",
   "permissions": ["storage", "activeTab"],
+  "action": {
+    "default_title": "PinLLM — Search Pinned Responses & Artifacts",
+    "default_popup": "popup.html"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
@@ -15,6 +20,9 @@
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://gemini.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://www.perplexity.ai/*",
+        "https://huggingface.co/chat/*",
         "http://localhost:*/*"
       ],
       "js": ["content.js"],
@@ -29,6 +37,12 @@
         "mac": "Command+Shift+P"
       },
       "description": "Toggle the PinLLM Search & Artifact Drawer"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pinllm@opensource.org",
+      "strict_min_version": "109.0"
     }
   }
 }

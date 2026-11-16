@@ -98,6 +98,7 @@ const MIME_TYPES: Record<string, string> = {
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.zip': 'application/zip',
 };
 
 export function createPinServer() {

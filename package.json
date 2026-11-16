@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node apps/web/server.ts",
     "test": "node --test tests/core.test.ts",
-    "build:browser": "node scripts/bundle-browser.ts"
+    "package:extension": "node scripts/package-extension.ts"
   },
   "keywords": [
     "llm",
