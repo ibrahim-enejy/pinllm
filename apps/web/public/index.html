@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PinLLM — Open-Source LLM Response &amp; Async Artifact Pinning</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="17" x2="12" y2="22"></line>
+          <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path>
+        </svg>
+      </div>
+      <div>
+        <span class="brand-title">PinLLM</span>
+        <span class="brand-badge">Open Source · Local-First</span>
+      </div>
+    </div>
+
+    <div class="async-status-bar" id="asyncStatusBar" title="Asynchronous Artifact Extraction Worker Queue">
+      <span class="status-dot idle" id="workerDot"></span>
+      <span class="status-text" id="workerStatusText">Async Extractor Idle · Ready</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" id="btnNewMessage" title="Simulate a new LLM response in the current thread">
+        + Simulate LLM Response
+      </button>
+      <button class="btn btn-ghost" id="btnExportMd" title="Export all pinned responses and artifacts as Markdown">
+        Export .MD
+      </button>
+      <button class="btn btn-ghost" id="btnSettings" title="Configure Stage 2 Async Extraction Agent (Heuristic / Ollama / OpenAI)">
+        Agent Settings
+      </button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- Left Sidebar: Simulated Chat Threads -->
+    <aside class="threads-sidebar">
+      <div class="sidebar-header">
+        <h2>LLM Chat Sessions</h2>
+        <p class="muted-caption">Click the <strong>Pin icon</strong> on any LLM response to save the full message &amp; extract artifacts asynchronously.</p>
+      </div>
+      <div class="thread-list" id="threadList"></div>
+
+      <div class="extension-callout">
+        <div class="callout-title">Browser Extension Included</div>
+        <p>Load <code>apps/extension</code> as an unpacked extension in Chrome/Brave/Edge to inject the Pin button directly into ChatGPT, Claude &amp; Gemini.</p>
+      </div>
+    </aside>
+
+    <!-- Center Pane: Active LLM Chat Thread -->
+    <section class="chat-pane">
+      <div class="chat-header" id="chatHeader">
+        <div>
+          <span class="platform-pill" id="activePlatformPill">Claude</span>
+          <h1 id="activeThreadTitle">Loading chat...</h1>
+        </div>
+        <span class="model-pill" id="activeModelBadge"></span>
+      </div>
+
+      <div class="chat-messages" id="chatMessages"></div>
+    </section>
+
+    <!-- Right Pane: PinLLM Vault, Search & Artifact Inspector -->
+    <aside class="vault-pane">
+      <div class="vault-header">
+        <div class="vault-title-row">
+          <h2>Pinned Responses &amp; Artifacts</h2>
+          <div class="vault-counters">
+            <span class="counter-pill" id="totalPinsBadge">0 Pins</span>
+            <span class="counter-pill accent" id="totalArtifactsBadge">0 Artifacts</span>
+          </div>
+        </div>
+
+        <!-- Instant Hybrid Search Input -->
+        <div class="search-box">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="search"
+            id="searchInput"
+            placeholder="Search full responses, prompts, code, tables, diagrams... (Cmd+K)"
+            autocomplete="off"
+          />
+          <kbd class="search-shortcut">⌘K</kbd>
+        </div>
+
+        <!-- View Mode Segmented Control -->
+        <div class="segmented-control" role="tablist" aria-label="Search Granularity">
+          <button class="segment active" data-view-mode="all">All (Full + Artifacts)</button>
+          <button class="segment" data-view-mode="responses">Full Responses</button>
+          <button class="segment" data-view-mode="artifacts">Artifacts Only</button>
+        </div>
+
+        <!-- Artifact Type Filter Pills -->
+        <div class="filter-pills" id="artifactTypeFilters">
+          <button class="filter-pill active" data-art-type="all">All Types</button>
+          <button class="filter-pill" data-art-type="code">Code</button>
+          <button class="filter-pill" data-art-type="mermaid">Mermaid</button>
+          <button class="filter-pill" data-art-type="table">Table</button>
+          <button class="filter-pill" data-art-type="command">CLI</button>
+          <button class="filter-pill" data-art-type="checklist">Checklist</button>
+          <button class="filter-pill" data-art-type="decision">Decisions</button>
+        </div>
+      </div>
+
+      <!-- Search Results List -->
+      <div class="vault-results" id="vaultResults"></div>
+    </aside>
+  </main>
+
+  <!-- Full Response & Artifact Detail Modal -->
+  <div class="modal-backdrop hidden" id="detailModalBackdrop">
+    <div class="modal-card detail-modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="platform-pill" id="detailPlatformPill">claude</span>
+          <h2 id="detailTitle">Pinned Response</h2>
+        </div>
+        <div class="modal-header-actions">
+          <button class="btn btn-secondary btn-sm" id="btnJumpToChat">Jump to Message in Chat ↗</button>
+          <button class="btn btn-secondary btn-sm" id="btnCopyFullResponse">Copy Full Markdown</button>
+          <button class="btn btn-danger btn-sm" id="btnDeletePin">Unpin</button>
+          <button class="btn-icon-close" id="btnCloseDetail" aria-label="Close">&times;</button>
+        </div>
+      </div>
+
+      <div class="detail-subbar">
+        <div class="detail-tabs">
+          <button class="detail-tab active" data-detail-tab="full">Full LLM Response</button>
+          <button class="detail-tab" data-detail-tab="artifacts" id="detailArtifactsTabBtn">Extracted Artifacts (0)</button>
+        </div>
+        <div class="detail-status" id="detailExtractionStatus"></div>
+      </div>
+
+      <div class="modal-body" id="detailModalBody"></div>
+    </div>
+  </div>
+
+  <!-- Simulate Custom LLM Message Modal -->
+  <div class="modal-backdrop hidden" id="composeModalBackdrop">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h2>Simulate &amp; Pin a Custom LLM Response</h2>
+        <button class="btn-icon-close" id="btnCloseCompose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label">User Prompt</label>
+        <input type="text" id="customPromptInput" class="text-input" value="How should we structure our JWT refresh token rotation in FastAPI?" />
+        <label class="field-label">LLM Response Markdown (include code blocks, tables, checklists, or callouts)</label>
+        <textarea id="customResponseInput" class="textarea-input" rows="12">## Refresh Token Rotation with Reuse Detection
+
+Always store a SHA-256 hash of the refresh token in Redis or PostgreSQL with a `family_id` so stolen token reuse invalidates the entire session family immediately.
+
+> [!IMPORTANT]
+> **Security Rule**: Never issue a new refresh token without atomically marking the parent token as `rotated = true`. If a rotated token is presented again, revoke the entire `family_id`.
+
+```python
+# app/auth/tokens.py
+import hashlib
+import secrets
+
+def issue_refresh_pair(user_id: str, family_id: str) -> dict:
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    return {"user_id": user_id, "family_id": family_id, "token_hash": token_hash}
+```
+
+- [x] Set `HttpOnly; Secure; SameSite=Strict` on refresh cookie
+- [ ] Expire access tokens after 10 minutes</textarea>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="btnSubmitCustomMessage">Add to Chat &amp; Pin Immediately</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Settings Modal -->
+  <div class="modal-backdrop hidden" id="settingsModalBackdrop">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h2>Async Artifact Extraction Agent Settings</h2>
+        <button class="btn-icon-close" id="btnCloseSettings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted-caption">
+          Stage 1 (Markdown AST extraction of code, Mermaid, tables, commands &amp; checklists) always runs locally in &lt;10ms.
+          Configure Stage 2 (asynchronous title, summary, semantic tags &amp; implicit prose decisions):
+        </p>
+        <label class="field-label">Stage 2 Provider</label>
+        <select id="providerSelect" class="text-input">
+          <option value="heuristic">Built-in Local Heuristic Agent (Zero API Key / Offline)</option>
+          <option value="ollama">Ollama Local LLM (http://localhost:11434)</option>
+          <option value="openai">OpenAI Compatible API (gpt-4o-mini)</option>
+        </select>
+        <label class="field-label">Model Name (for Ollama / OpenAI)</label>
+        <input type="text" id="modelInput" class="text-input" placeholder="llama3.2 or gpt-4o-mini" />
+        <label class="field-label">API Key (optional, only for OpenAI)</label>
+        <input type="password" id="apiKeyInput" class="text-input" placeholder="sk-..." />
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="btnSaveSettings">Save Configuration</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "PinLLM — Pin LLM Responses & Search Extracted Artifacts",
+  "version": "0.1.0",
+  "description": "Pin full LLM responses inside ChatGPT, Claude, and Gemini with asynchronous artifact extraction and instant hybrid search.",
+  "permissions": ["storage", "activeTab"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "http://localhost:*/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-pin-drawer": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P",
+        "mac": "Command+Shift+P"
+      },
+      "description": "Toggle the PinLLM Search & Artifact Drawer"
+    }
+  }
+}
